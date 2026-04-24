@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trader
+      POSTGRES_DB: trading
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d trading"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  bot:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://trader:trader@db:5432/trading
+    ports:
+      - "9108:9108"
+    restart: unless-stopped
+    command: ["python", "-m", "app.main"]
+
+  backtest:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://trader:trader@db:5432/trading
+      APP_ENV: backtest
+      DRY_RUN: "true"
+    profiles: ["backtest"]
+    command: ["python", "-m", "backtest.run"]
+
+volumes:
+  pgdata:
