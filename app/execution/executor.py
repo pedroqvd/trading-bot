@@ -99,7 +99,28 @@ class Executor:
                 exchange_order_id=None,
                 details={"mode": "simulated_passive_pending"},
             )
-        fill_price = slippage_adjust(request.price, request.order_side.value, settings.slippage_bps)
+        # Apply dynamic slippage based on book context if the caller attached it.
+        slip_bps = settings.slippage_bps
+        book = (request.metadata or {}).get("__book")
+        realized_vol = float((request.metadata or {}).get("__realized_vol", 0.0) or 0.0)
+        if book is not None:
+            from app.execution.realistic_execution import dynamic_slippage_bps
+            slip_bps = dynamic_slippage_bps(
+                book=book, side=request.order_side.value,
+                shares=request.shares, realized_vol=realized_vol,
+                base_bps=settings.slippage_bps,
+            )
+        # Optional execution failure (used in backtests, off by default in live).
+        if settings.exec_failure_rate > 0:
+            from app.execution.realistic_execution import sample_latency
+            budget = sample_latency()
+            if budget.failed:
+                return ExecutionResult(
+                    request=request, status=TradeStatus.FAILED,
+                    error="simulated_execution_failure",
+                    details={"mode": "simulated", "slip_bps": slip_bps},
+                )
+        fill_price = slippage_adjust(request.price, request.order_side.value, slip_bps)
         fill_price = max(0.0001, min(0.9999, fill_price))
         fees = request.shares * fill_price * (settings.taker_fee_bps / 10_000.0)
         return ExecutionResult(
@@ -110,7 +131,7 @@ class Executor:
             fees_usd=fees,
             exchange_order_id=None,
             filled_at=datetime.now(timezone.utc),
-            details={"mode": "simulated"},
+            details={"mode": "simulated", "slip_bps": slip_bps},
         )
 
     # -----------------------------------------------------------------------

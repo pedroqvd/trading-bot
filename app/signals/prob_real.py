@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.data.market_analytics import MarketFeatures
-from app.signals.quality import OverreactionScore
+from app.signals.quality import MomentumScore, OverreactionScore
 from app.utils.math_utils import clamp
 
 
@@ -64,4 +64,39 @@ def bayesian_prob_real(
         weight_anchor=w_anchor,
         weight_current=w_current,
         weight_mean=w_mean,
+    )
+
+
+@dataclass(frozen=True)
+class MomentumProbReal:
+    prob_real_yes_mid: float
+    extrapolation: float       # how far we project the trend forward
+    confidence: float          # mirror of momentum score
+
+
+def bayesian_prob_real_momentum(
+    features: MarketFeatures,
+    score: MomentumScore,
+    base_extrapolation: float = 0.5,
+) -> MomentumProbReal:
+    """Posterior fair-value estimate for momentum trades.
+
+    Hypothesis (continuation): a strong, persistent, low-reversion trend
+    is likely to *extend*, not revert. We project a fraction of the historical
+    move beyond the current price, scaled by score strength and damped by
+    realised volatility.
+    """
+    current = clamp(features.current_mid, 0.01, 0.99)
+    move = features.abs_move
+
+    # Extrapolation factor: at score=1.0 we project base_extrapolation × |move|
+    # in the trend direction; at score=0 we don't move from current.
+    extrapolation = base_extrapolation * score.score
+    # Volatility damping — chaotic markets carry weaker continuation signal.
+    vol_damping = 1.0 - clamp(features.realized_vol / 0.10, 0.0, 0.5)
+    projected = current + move * extrapolation * vol_damping
+    return MomentumProbReal(
+        prob_real_yes_mid=clamp(projected, 0.01, 0.99),
+        extrapolation=extrapolation * vol_damping,
+        confidence=score.score,
     )

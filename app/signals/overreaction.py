@@ -29,6 +29,7 @@ from app.signals.base import SignalCandidate, SignalDetector
 from app.signals.prob_real import bayesian_prob_real
 from app.signals.quality import (
     OverreactionScore,
+    momentum_score,
     overreaction_hard_filters_pass,
     overreaction_score,
 )
@@ -80,6 +81,13 @@ class OverreactionDetector(SignalDetector):
         if not score.passes_filter:
             log.debug("overreaction.rejected_low_score",
                       market=m.slug, score=score.score)
+            return None
+
+        # Mutual exclusion: skip overreaction when momentum is also strong.
+        m_score = momentum_score(features)
+        if m_score.score >= settings.overreaction_block_when_momentum_above:
+            log.info("overreaction.blocked_by_momentum",
+                     market=m.slug, overreaction=score.score, momentum=m_score.score)
             return None
 
         # Derive Bayesian fair value of YES, then translate to the leg we're buying.

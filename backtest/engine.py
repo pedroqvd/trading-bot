@@ -8,14 +8,33 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import random
 from typing import Iterable, Optional
 
 from app.config import settings
+from app.execution.realistic_execution import dynamic_slippage_bps
 from app.data.schemas import BookLevel, MarketQuote, OrderBook
 from app.database.models import Side
 from app.signals.arbitrage import ArbitrageDetector
 from app.signals.base import SignalCandidate
 from app.utils.math_utils import EdgeSnapshot, fractional_kelly, slippage_adjust
+
+
+def _backtest_slippage_bps(book, side: str, shares: float, realized_vol: float) -> float:
+    """Resolve dynamic slippage in the backtest, falling back to the static value."""
+    if settings.exec_dynamic_slippage_enabled:
+        return dynamic_slippage_bps(
+            book=book, side=side, shares=shares,
+            realized_vol=realized_vol, base_bps=settings.slippage_bps,
+        )
+    return settings.slippage_bps
+
+
+def _execution_succeeds() -> bool:
+    rate = settings.exec_failure_rate
+    if rate <= 0:
+        return True
+    return random.random() >= rate
 
 
 @dataclass
@@ -171,10 +190,12 @@ class BacktestEngine:
             side = Side.NO
             price = tick.no_ask
             prob_real = 1.0 - target
+            book = q.no_book
         else:
             side = Side.YES
             price = tick.yes_ask
             prob_real = target
+            book = q.yes_book
 
         if not (0 < price < 1 and 0 < prob_real < 1):
             return
@@ -187,10 +208,14 @@ class BacktestEngine:
         size = min(raw_size, self.capital * settings.max_position_pct, tick.depth_usd * 0.25)
         if size < 1:
             return
-        fill_price = slippage_adjust(price, "BUY", settings.slippage_bps)
+        slip_bps = _backtest_slippage_bps(book, "BUY", size / max(price, 1e-3),
+                                          realized_vol=0.0)
+        fill_price = slippage_adjust(price, "BUY", slip_bps)
         shares = size / fill_price
         if shares < 1:
             return
+        if not _execution_succeeds():
+            return  # backtest models a fill failure
         self.cash -= shares * fill_price
 
         take_profit = min(0.99, fill_price + settings.overreaction_take_profit)

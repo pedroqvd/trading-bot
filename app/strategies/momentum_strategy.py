@@ -1,4 +1,4 @@
-"""Overreaction strategy — size Kelly bet and emit one entry order."""
+"""Momentum strategy — Kelly-sized continuation entry."""
 from __future__ import annotations
 
 from datetime import timedelta
@@ -18,8 +18,8 @@ from app.utils.time_utils import utcnow
 log = get_logger(__name__)
 
 
-class OverreactionStrategy(Strategy):
-    name = "overreaction"
+class MomentumStrategy(Strategy):
+    name = "momentum"
 
     def __init__(self, risk: RiskManager) -> None:
         self.risk = risk
@@ -28,7 +28,7 @@ class OverreactionStrategy(Strategy):
         edge = signal.edge
         price = edge.price
         if not (0 < price < 1):
-            return StrategyResult(False, [], reason="invalid price", risk=None)
+            return StrategyResult(False, [], reason="invalid price")
 
         raw_size = suggested_size_usd(
             prob_real=edge.prob_real,
@@ -46,32 +46,33 @@ class OverreactionStrategy(Strategy):
             liquidity_usd=signal.liquidity_usd,
             spread=signal.spread,
             current_equity_usd=current_equity_usd,
-            quality_score=signal.context.get("score"),
+            quality_score=signal.context.get("momentum_score"),
             side=signal.side,
             question=signal.market.question,
             slug=signal.market.slug,
             realized_vol=float(signal.context.get("realized_vol", 0.0) or 0.0),
         )
         if not decision.approved:
-            log.info("strategy.overreaction.rejected",
+            log.info("strategy.momentum.rejected",
                      market=signal.market.slug, reason=decision.reason)
             return StrategyResult(False, [], reason=decision.reason, risk=decision)
 
         shares = decision.size_usd / price
-        if shares < 1:  # Polymarket typically trades in 1-share increments
-            return StrategyResult(False, [], reason="Size < 1 share after sizing", risk=decision)
+        if shares < 1:
+            return StrategyResult(False, [], reason="size < 1 share", risk=decision)
 
         entry_price = clamp(price, 0.0001, 0.9999)
-        take_profit = clamp(entry_price + settings.overreaction_take_profit, 0.0001, 0.9999)
-        stop_loss = clamp(entry_price - settings.overreaction_stop_loss, 0.0001, 0.9999)
-        max_hold_until = utcnow() + timedelta(minutes=settings.overreaction_max_hold_minutes)
+        # Tighter take/stop than overreaction — momentum is shorter-lived.
+        take_profit = clamp(entry_price + settings.momentum_take_profit, 0.0001, 0.9999)
+        stop_loss = clamp(entry_price - settings.momentum_stop_loss, 0.0001, 0.9999)
+        max_hold_until = utcnow() + timedelta(minutes=settings.momentum_max_hold_minutes)
 
         token_id = (signal.market.yes_token_id
                     if signal.side == Side.YES else signal.market.no_token_id)
 
         request = OrderRequest(
             market_condition_id=signal.market.condition_id,
-            market_id=0,  # filled in by runner with persisted id
+            market_id=0,
             token_id=token_id,
             market_side=signal.side,
             order_side=OrderSide.BUY,
@@ -79,7 +80,7 @@ class OverreactionStrategy(Strategy):
             size_usd=shares * entry_price,
             shares=shares,
             strategy=self.name,
-            client_order_id=new_client_order_id(prefix="over"),
+            client_order_id=new_client_order_id(prefix="mom"),
             metadata={
                 "rationale": signal.rationale,
                 "edge": {

@@ -24,6 +24,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database.session import Base
 
 
+# BigInteger autoincrement is not supported on SQLite — fall back to Integer
+# there so tests work against an in-memory database while production keeps
+# 64-bit identity columns on Postgres.
+BigIntPK = BigInteger().with_variant(Integer, "sqlite")
+
+
 class Side(str, enum.Enum):
     YES = "YES"
     NO = "NO"
@@ -51,6 +57,7 @@ class TradeStatus(str, enum.Enum):
 class SignalType(str, enum.Enum):
     OVERREACTION = "OVERREACTION"
     ARBITRAGE = "ARBITRAGE"
+    MOMENTUM = "MOMENTUM"
 
 
 class Market(Base):
@@ -80,7 +87,7 @@ class Quote(Base):
     __tablename__ = "quotes"
     __table_args__ = (Index("ix_quotes_market_time", "market_id", "ts"),)
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     market_id: Mapped[int] = mapped_column(ForeignKey("markets.id", ondelete="CASCADE"), index=True)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
@@ -101,7 +108,7 @@ class Signal(Base):
     __tablename__ = "signals"
     __table_args__ = (Index("ix_signals_market_created", "market_id", "created_at"),)
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     market_id: Mapped[int] = mapped_column(ForeignKey("markets.id", ondelete="CASCADE"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     signal_type: Mapped[SignalType] = mapped_column(Enum(SignalType))
@@ -186,7 +193,7 @@ class EquitySnapshot(Base):
     """Per-interval equity curve snapshot for drawdown and Sharpe computation."""
     __tablename__ = "equity_snapshots"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigIntPK, primary_key=True, autoincrement=True)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
     cash_usd: Mapped[float] = mapped_column(Float)
     unrealized_usd: Mapped[float] = mapped_column(Float)

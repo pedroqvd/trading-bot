@@ -6,6 +6,7 @@ from typing import Iterator
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.config import settings
 
@@ -19,6 +20,10 @@ def _build_engine():
     kwargs: dict = {"pool_pre_ping": True, "future": True}
     if url.startswith("sqlite"):
         kwargs["connect_args"] = {"check_same_thread": False}
+        if ":memory:" in url:
+            # In-memory SQLite is per-connection; share one connection across
+            # the whole engine so tests see the same database.
+            kwargs["poolclass"] = StaticPool
     else:
         kwargs.update(pool_size=10, max_overflow=20)
     return create_engine(url, **kwargs)

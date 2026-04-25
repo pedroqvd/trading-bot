@@ -29,6 +29,30 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "app.main"]
 
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://trader:trader@db:5432/trading
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    command: ["python", "-m", "app.api_main"]
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    depends_on:
+      - api
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+
   backtest:
     build: .
     depends_on:

@@ -35,6 +35,11 @@ class MarketFeatures:
     volume_z: float              # current 24h volume z-score vs rolling baseline
     avg_spread: float            # mean (yes_ask - yes_bid)
 
+    # Phase 2 extensions
+    spread_volatility: float = 0.0    # stdev of spread across the window — momentum stability check
+    trend_strength: float = 0.0       # |rel_move| × persistence — combined directional force
+    mean_reversion_signal: float = 0.0  # ratio of last-quarter move that *reversed*
+
     @property
     def is_valid(self) -> bool:
         return self.ticks >= 3 and self.anchor_mid > 0
@@ -98,6 +103,20 @@ class MarketAnalytics:
             if q.yes_ask is not None and q.yes_bid is not None
         ]
         avg_spread = sum(spreads) / len(spreads) if spreads else 0.0
+        spread_volatility = _stdev(spreads)
+
+        # Mean-reversion signal: in the final quarter of the window, what fraction of the
+        # move was *against* the total direction? High = momentum is exhausting.
+        last_q_start = max(1, int(len(mids) * 0.75))
+        last_q_returns = returns[last_q_start - 1:] if len(returns) >= last_q_start else []
+        if last_q_returns and abs(rel_move) > 1e-9:
+            total_sign = 1.0 if rel_move > 0 else -1.0
+            counter = sum(1 for r in last_q_returns if (r > 0) != (total_sign > 0))
+            mean_reversion_signal = counter / len(last_q_returns)
+        else:
+            mean_reversion_signal = 0.0
+
+        trend_strength = min(1.0, abs(rel_move) * 4.0) * persistence
 
         return MarketFeatures(
             window_minutes=window_minutes,
@@ -112,6 +131,9 @@ class MarketAnalytics:
             realized_vol=realized_vol,
             volume_z=volume_z,
             avg_spread=avg_spread,
+            spread_volatility=spread_volatility,
+            trend_strength=trend_strength,
+            mean_reversion_signal=mean_reversion_signal,
         )
 
     # -----------------------------------------------------------------------
