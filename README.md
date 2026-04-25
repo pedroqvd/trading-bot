@@ -136,6 +136,42 @@ docker compose --profile backtest run --rm backtest \
   python -m backtest.run --ticks ticks.csv --walk-forward --folds 5
 ```
 
+## Edge quality (post-audit upgrades)
+
+The bot has explicit **quality scoring** before any risk check fires.
+
+### Overreaction — composite score
+Five sub-scores combine into `overreaction_score ∈ [0, 1]`. Hard filters reject
+the candidate before scoring; the score then must clear `overreaction_min_score`.
+
+| Sub-score | Drives the hypothesis |
+| --------- | --------------------- |
+| Magnitude | Bigger moves carry more reversion potential (saturates at 25%) |
+| Velocity | Fast (`%/min`) implies panic / order-flow, not fundamentals |
+| Volume z-score | Move on strong participation > move on dead book |
+| Spike ratio | Concentration in one tick distinguishes spike from trend |
+| Persistence penalty | Monotonic drifts get dampened (they're trends) |
+| Realised-vol penalty | Markets that already swing wildly are not surprises |
+
+### Bayesian prob_real
+`prob_real` is a posterior, not a static reversion target:
+```
+prob_real = w_anchor * anchor + w_current * current + w_mean * 0.5
+```
+Weights derive from the overreaction score and realised volatility: high-score
+fades pull toward anchor; high vol pulls toward 0.5 (prior ignorance).
+
+### Arbitrage — book-walk + execution confidence
+The detector simulates walking both YES and NO books with a safety multiplier
+on requested depth. It emits the candidate **only** when:
+- both books fill the safety-buffered notional without exhaustion;
+- VWAP profit per bond after the walk still clears `arbitrage_min_edge`;
+- the `confidence` (headroom above the floor) clears `arbitrage_min_exec_confidence`.
+
+The strategy then **rebuilds the plan with the live book** at order-construction
+time so legs are sized to what's actually fillable. `sell_both` was removed —
+the bot is long-only and emitting it just polluted metrics.
+
 ## Risk management
 
 | Control | Default | Knob |
@@ -143,11 +179,32 @@ docker compose --profile backtest run --rm backtest \
 | Fractional Kelly | 25% | `KELLY_FRACTION` |
 | Max trade % of equity | 5% | `MAX_POSITION_PCT` |
 | Max portfolio exposure | 60% | `MAX_PORTFOLIO_EXPOSURE` |
+| **Max strategy exposure** | **35%** | **`MAX_STRATEGY_EXPOSURE_PCT`** |
+| **Max market exposure** | **8%** | **`MAX_MARKET_EXPOSURE_PCT`** |
+| **Market cooldown after close** | **30 min** | **`MARKET_COOLDOWN_MINUTES`** |
 | Daily loss circuit breaker | 5% | `MAX_DAILY_LOSS_PCT` |
+| **Per-strategy daily loss cap** | **3%** | **`DAILY_STRATEGY_LOSS_CAP_PCT`** |
+| **Loss-streak Kelly cut (soft)** | **3 losses → ×0.5** | **`LOSS_STREAK_SOFT_THRESHOLD`** |
+| **Loss-streak Kelly cut (hard)** | **5 losses → ×0.25** | **`LOSS_STREAK_HARD_THRESHOLD`** |
 | Drawdown kill-switch | 15% | `MAX_DRAWDOWN_PCT` |
 | Max open positions | 20 | `MAX_OPEN_POSITIONS` |
 
+Per-strategy and per-market state is **derived from the persistent Position
+table** so it survives restarts. Loss-streak Kelly scaling shrinks size after
+consecutive losses and resets only after `LOSS_STREAK_RECOVERY_TRADES` wins.
+
 Every breaker trip is persisted to `risk_events` and alerted via `ALERT_WEBHOOK_URL`.
+
+## Smart execution
+
+`SmartOrderPlacer` keeps the spread when possible:
+1. Place a passive limit one tick inside the spread (`SMART_ORDER_PASSIVE_OFFSET`).
+2. Wait up to `SMART_ORDER_WAIT_SECONDS` watching the book.
+3. Abort if price drifts > `SMART_ORDER_MAX_PRICE_DRIFT` against us.
+4. On timeout, cancel and fall back to an IOC taker with a fresh
+   `client_order_id`.
+
+Arbitrage legs **always go taker** — they cannot risk a leg sitting passive while the other one fills.
 
 ## Resilience
 

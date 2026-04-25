@@ -39,8 +39,18 @@ def test_arbitrage_no_edge_when_prices_sum_to_one():
     assert signals == []
 
 
-def test_arbitrage_detects_sell_both():
+def test_arbitrage_skips_sell_both_long_only_bot():
+    # Even when bid_sum > 1, the long-only bot must not emit a sell_both
+    # signal: it would require pre-existing inventory on both legs.
     quote = _mk_quote(yes_bid=0.55, yes_ask=0.56, no_bid=0.52, no_ask=0.53)
-    # bid_sum = 1.07 → overpriced, profit 0.07
     signals = ArbitrageDetector().scan([quote])
-    assert any(s.context["kind"] == "sell_both" for s in signals)
+    assert all(s.context.get("kind") != "sell_both" for s in signals)
+
+
+def test_arbitrage_uses_book_walk_avg_prices():
+    quote = _mk_quote(yes_bid=0.40, yes_ask=0.40, no_bid=0.40, no_ask=0.40)
+    signals = ArbitrageDetector().scan([quote])
+    assert len(signals) == 1
+    s = signals[0]
+    assert "yes_avg_price" in s.context and "no_avg_price" in s.context
+    assert s.context["confidence"] > 0
