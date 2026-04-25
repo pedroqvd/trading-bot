@@ -51,7 +51,7 @@ class Executor:
             TRADES_FAILED.labels(strategy=request.strategy, reason="exception").inc()
             result = ExecutionResult(request=request, status=TradeStatus.FAILED, error=str(exc))
 
-        self._record_result(result)
+        self.record_result(result)
         if result.status in (TradeStatus.FILLED, TradeStatus.PARTIAL):
             TRADES_FILLED.labels(strategy=request.strategy,
                                  side=f"{request.order_side.value}-{request.market_side.value}").inc()
@@ -59,10 +59,46 @@ class Executor:
             TRADES_FAILED.labels(strategy=request.strategy, reason=result.status.value).inc()
         return result
 
+    def record_external_fill(self, result: ExecutionResult) -> None:
+        """Public hook used by the smart placer for passive-fill outcomes.
+
+        The original PENDING row already exists (created by `execute`); this
+        updates it to FILLED with the realised price/shares/fees.
+        """
+        self.record_result(result)
+        TRADES_FILLED.labels(
+            strategy=result.request.strategy,
+            side=f"{result.request.order_side.value}-{result.request.market_side.value}",
+        ).inc()
+
+    def cancel_passive(self, request: OrderRequest) -> None:
+        """Mark a resting passive order as CANCELED in our books."""
+        with session_scope() as session:
+            trade = session.execute(
+                select(Trade).where(Trade.client_order_id == request.client_order_id)
+            ).scalar_one_or_none()
+            if trade is None:
+                return
+            if trade.status == TradeStatus.PENDING:
+                trade.status = TradeStatus.CANCELED
+
     # -----------------------------------------------------------------------
     # Simulated venue
     # -----------------------------------------------------------------------
     def _execute_simulated(self, request: OrderRequest) -> ExecutionResult:
+        # Post-only / GTC orders rest on the book in production. The
+        # SmartOrderPlacer is responsible for deciding whether a passive order
+        # gets hit. Returning PENDING here forces honest accounting in backtests.
+        if request.post_only:
+            return ExecutionResult(
+                request=request,
+                status=TradeStatus.PENDING,
+                filled_shares=0.0,
+                filled_price=0.0,
+                fees_usd=0.0,
+                exchange_order_id=None,
+                details={"mode": "simulated_passive_pending"},
+            )
         fill_price = slippage_adjust(request.price, request.order_side.value, settings.slippage_bps)
         fill_price = max(0.0001, min(0.9999, fill_price))
         fees = request.shares * fill_price * (settings.taker_fee_bps / 10_000.0)
@@ -142,7 +178,7 @@ class Executor:
             ))
 
     @staticmethod
-    def _record_result(result: ExecutionResult) -> None:
+    def record_result(result: ExecutionResult) -> None:
         with session_scope() as session:
             trade = session.execute(
                 select(Trade).where(Trade.client_order_id == result.request.client_order_id)

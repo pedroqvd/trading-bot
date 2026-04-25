@@ -211,8 +211,12 @@ class BacktestEngine:
     def _enter_arb(self, s: SignalCandidate, tick: HistoricalTick) -> None:
         if s.context.get("kind") != "buy_both":
             return
-        yes_price = float(s.context["yes_price"])
-        no_price = float(s.context["no_price"])
+        # New detector exposes book-walk avg prices; older runs may still emit
+        # the legacy `yes_price`/`no_price` keys.
+        yes_price = float(s.context.get("yes_avg_price", s.context.get("yes_price", 0)))
+        no_price = float(s.context.get("no_avg_price", s.context.get("no_price", 0)))
+        if yes_price <= 0 or no_price <= 0:
+            return
         per_trade_cap = self.capital * settings.max_position_pct
         bonds = min(per_trade_cap / (yes_price + no_price), tick.depth_usd / (yes_price + no_price))
         bonds = max(1.0, round(bonds))

@@ -55,8 +55,18 @@ class Settings(BaseSettings):
     overreaction_stop_loss: float = 0.05
     overreaction_max_hold_minutes: int = 240
 
+    # Overreaction quality scoring — only trade when composite score exceeds this
+    overreaction_min_score: float = 0.65
+    overreaction_min_velocity_pct_per_min: float = 0.004  # 0.4 %/min
+    overreaction_min_volume_z: float = 1.0                # volume must exceed 1σ of rolling baseline
+    overreaction_min_spike_ratio: float = 0.55            # >55% of move must concentrate in one tick
+    overreaction_max_realized_vol: float = 0.10           # skip ultra-volatile markets
+    overreaction_min_ticks: int = 6                       # need at least N observations
+
     arbitrage_min_edge: float = 0.02
     arbitrage_max_leg_slippage: float = 0.005
+    arbitrage_min_exec_confidence: float = 0.60           # 0..1 book-walk confidence floor
+    arbitrage_size_safety_multiplier: float = 1.10        # ask 10% more depth than we use
 
     # --- Risk ----------------------------------------------------------------
     kelly_fraction: float = 0.25
@@ -65,9 +75,28 @@ class Settings(BaseSettings):
     max_daily_loss_pct: float = 0.05
     max_drawdown_pct: float = 0.15
 
+    # Per-strategy exposure cap (fraction of equity) — prevents one strategy sinking the book
+    max_strategy_exposure_pct: float = 0.35
+    # Per-market exposure cap (fraction of equity) — prevents concentration in one event
+    max_market_exposure_pct: float = 0.08
+    # Cooldown after closing a position on a market (prevents immediate re-entry at the same level)
+    market_cooldown_minutes: int = 30
+    # Post-loss Kelly scaling — after N consecutive losses on a strategy, cut Kelly by X
+    loss_streak_soft_threshold: int = 3     # after 3 in a row, halve Kelly
+    loss_streak_hard_threshold: int = 5     # after 5 in a row, quarter Kelly
+    loss_streak_recovery_trades: int = 2    # N wins to reset the penalty
+    daily_strategy_loss_cap_pct: float = 0.03   # 3% of equity lost by a single strategy pauses it
+
     # --- Execution -----------------------------------------------------------
     slippage_bps: float = 20.0
     taker_fee_bps: float = 0.0
+
+    # Smart execution — wait for micro-retracement before paying the spread
+    smart_order_enabled: bool = True
+    smart_order_wait_seconds: int = 20
+    smart_order_passive_offset: float = 0.01   # 1 cent inside the spread
+    smart_order_max_price_drift: float = 0.02  # abort if price moves 2¢ against us while waiting
+    smart_order_poll_ms: int = 500
 
     # --- Monitoring ----------------------------------------------------------
     prometheus_port: int = 9108

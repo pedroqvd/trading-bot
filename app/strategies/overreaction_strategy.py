@@ -39,12 +39,14 @@ class OverreactionStrategy(Strategy):
 
         decision = self.risk.check(
             strategy=self.name,
+            condition_id=signal.market.condition_id,
             suggested_size_usd=raw_size,
             edge_mispricing=edge.mispricing,
             edge_ev=edge.ev,
             liquidity_usd=signal.liquidity_usd,
             spread=signal.spread,
             current_equity_usd=current_equity_usd,
+            quality_score=signal.context.get("score"),
         )
         if not decision.approved:
             log.info("strategy.overreaction.rejected",

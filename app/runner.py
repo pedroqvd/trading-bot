@@ -21,10 +21,12 @@ from app.database.models import (
 from app.execution.executor import Executor
 from app.execution.orders import ExecutionResult, OrderRequest
 from app.execution.position_manager import PositionManager
+from app.execution.smart_order import SmartOrderPlacer
 from app.monitoring.alerts import send_alert
 from app.monitoring.logger import get_logger
 from app.monitoring.metrics import LOOP_LATENCY, start_metrics_server
 from app.portfolio.portfolio import Portfolio
+from app.portfolio.strategy_metrics import per_strategy_report
 from app.risk.risk_manager import RiskManager
 from app.signals.arbitrage import ArbitrageDetector
 from app.signals.base import SignalCandidate, SignalDetector
@@ -41,6 +43,7 @@ class TradingRunner:
         self.client = PolymarketClient()
         self.store = MarketStore(self.client)
         self.executor = Executor(self.client)
+        self.smart_orders = SmartOrderPlacer(self.client, self.executor)
         self.portfolio = Portfolio()
         self.risk = RiskManager()
         self.position_manager = PositionManager(self.client, self.executor)
@@ -112,6 +115,17 @@ class TradingRunner:
             daily_pnl=summary.realized_today_usd,
             drawdown=summary.drawdown_pct,
         )
+        for sr in per_strategy_report(lookback_days=7):
+            log.info(
+                "portfolio.strategy_report",
+                strategy=sr.strategy,
+                trades=sr.trades,
+                win_rate=sr.win_rate,
+                expectancy_usd=sr.expectancy_usd,
+                profit_factor=sr.profit_factor,
+                avg_hold_min=sr.avg_hold_minutes,
+                max_drawdown_usd=sr.max_drawdown_usd,
+            )
 
         # Reconcile exits first (take-profit / stop-loss / time stop)
         exit_results = self.position_manager.reconcile(quotes)
@@ -186,29 +200,36 @@ class TradingRunner:
 
             # Arbitrage: execute atomically — cancel the second leg if first fails.
             if s.signal_type == SignalType.ARBITRAGE:
-                self._execute_arb_atomic(plan.orders)
+                self._execute_arb_atomic(plan.orders, s.market)
             else:
-                self._execute_and_record(plan.orders)
+                self._execute_and_record(plan.orders, s.market)
 
             # Refresh equity between consecutive entries so exposure stays bounded.
             equity_usd = self.portfolio.summary([]).equity_usd
 
-    def _execute_and_record(self, orders: list[OrderRequest]) -> None:
+    def _execute_and_record(self, orders: list[OrderRequest], market: MarketQuote) -> None:
         for req in orders:
-            result = self.executor.execute(req)
+            book = market.yes_book if req.market_side.value == "YES" else market.no_book
+            result = self.smart_orders.place(req, book, passive=True)
             if result.status in (TradeStatus.FILLED, TradeStatus.PARTIAL):
-                self.portfolio.record_entry(req, result)
+                # The smart placer may have used a fallback request with a
+                # different client_order_id; use whatever request is in the
+                # result so portfolio accounting matches the persisted row.
+                effective_req = result.request or req
+                self.portfolio.record_entry(effective_req, result)
 
-    def _execute_arb_atomic(self, orders: list[OrderRequest]) -> None:
+    def _execute_arb_atomic(self, orders: list[OrderRequest], market: MarketQuote) -> None:
         if len(orders) != 2:
-            self._execute_and_record(orders)
+            self._execute_and_record(orders, market)
             return
         yes_leg, no_leg = orders
-        yes_result = self.executor.execute(yes_leg)
+        # Arbitrage legs MUST be takers; we cannot afford a passive wait that
+        # would leave us with one leg open and the other resting.
+        yes_result = self.smart_orders.place(yes_leg, market.yes_book, passive=False)
         if yes_result.status not in (TradeStatus.FILLED, TradeStatus.PARTIAL):
             log.warning("arbitrage.leg_failed", leg="yes", status=yes_result.status.value)
             return
-        no_result = self.executor.execute(no_leg)
+        no_result = self.smart_orders.place(no_leg, market.no_book, passive=False)
         if no_result.status not in (TradeStatus.FILLED, TradeStatus.PARTIAL):
             log.error("arbitrage.leg_failed_after_fill", leg="no",
                       status=no_result.status.value)

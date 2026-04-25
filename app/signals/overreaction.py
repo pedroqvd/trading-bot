@@ -1,22 +1,37 @@
-"""Overreaction edge: fade rapid moves with high volume.
+"""Overreaction edge: fade rapid moves, but only when the *shape* of the move
+matches the hypothesis.
 
-Core hypothesis (per playbook):
-  When the market moves more than N% in a short window on elevated volume,
-  participants are typically overreacting to news/order-flow. Mean reversion
-  toward the pre-move anchor has statistically significant expected value on
-  binary prediction markets, especially for YES priced in (0.1, 0.9).
+Hypothesis (refined from the original playbook):
+  Sharp, fast, high-volume, single-tick-spike moves on prices in (0.05, 0.95)
+  on stable-volatility markets revert at least partway toward the pre-spike
+  anchor. Continuous monotonic drifts and noise on already-volatile markets do
+  *not* satisfy this hypothesis and are excluded by the quality scoring layer.
+
+Pipeline per market:
+  1. Compute `MarketFeatures` from the persisted quote history.
+  2. Apply hard filters (move size, ticks, velocity, volume z, spike, vol).
+  3. Compute the composite `OverreactionScore`.
+  4. If score passes, derive `prob_real` via the Bayesian estimator.
+  5. Validate EV / mispricing on the resulting edge before emitting.
 """
 from __future__ import annotations
 
 from typing import Iterable
 
 from app.config import settings
+from app.data.market_analytics import MarketAnalytics, MarketFeatures
 from app.data.market_store import MarketStore
 from app.data.schemas import MarketQuote
 from app.database.models import Side, SignalType
 from app.monitoring.logger import get_logger
 from app.monitoring.metrics import SIGNALS_DETECTED
 from app.signals.base import SignalCandidate, SignalDetector
+from app.signals.prob_real import bayesian_prob_real
+from app.signals.quality import (
+    OverreactionScore,
+    overreaction_hard_filters_pass,
+    overreaction_score,
+)
 from app.utils.math_utils import EdgeSnapshot
 
 log = get_logger(__name__)
@@ -25,8 +40,9 @@ log = get_logger(__name__)
 class OverreactionDetector(SignalDetector):
     name = "overreaction"
 
-    def __init__(self, store: MarketStore) -> None:
+    def __init__(self, store: MarketStore, analytics: MarketAnalytics | None = None) -> None:
         self.store = store
+        self.analytics = analytics or MarketAnalytics()
 
     def scan(self, markets: Iterable[MarketQuote]) -> list[SignalCandidate]:
         out: list[SignalCandidate] = []
@@ -43,7 +59,6 @@ class OverreactionDetector(SignalDetector):
             return None
         if m.volume_24h < settings.overreaction_min_volume_usd:
             return None
-        # Avoid degenerate books (prices at extremes are expensive to fade)
         if not (0.05 <= m.yes_mid <= 0.95):
             return None
 
@@ -51,35 +66,49 @@ class OverreactionDetector(SignalDetector):
         if market_id is None:
             return None
 
-        recent = self.store.recent_quotes(market_id, minutes=settings.overreaction_window_minutes)
-        if len(recent) < 3:
+        features = self.analytics.compute(market_id, settings.overreaction_window_minutes)
+        if features is None or not features.is_valid:
             return None
 
-        anchor = recent[0].yes_mid
-        if anchor is None or anchor <= 0 or anchor >= 1:
+        ok, reason = overreaction_hard_filters_pass(features)
+        if not ok:
+            log.debug("overreaction.rejected_hard_filter",
+                      market=m.slug, reason=reason)
             return None
 
-        move = m.yes_mid - anchor
-        rel_move = move / anchor
-        if abs(rel_move) < settings.overreaction_move_pct:
+        score = overreaction_score(features)
+        if not score.passes_filter:
+            log.debug("overreaction.rejected_low_score",
+                      market=m.slug, score=score.score)
             return None
 
-        # Fade the move — target is a partial reversion toward anchor.
-        reversion = settings.overreaction_reversion_target
-        target = m.yes_mid - reversion * move  # pulls halfway back toward anchor by default
+        # Derive Bayesian fair value of YES, then translate to the leg we're buying.
+        estimate = bayesian_prob_real(
+            features=features,
+            score=score,
+            base_reversion=settings.overreaction_reversion_target,
+        )
+        return self._build_candidate(m, features, score, estimate.prob_real_yes_mid)
 
-        if move > 0:
-            # YES rallied too hard → fade by buying NO (equivalent to selling YES).
+    # -----------------------------------------------------------------------
+    def _build_candidate(
+        self,
+        m: MarketQuote,
+        f: MarketFeatures,
+        score: OverreactionScore,
+        prob_real_yes_mid: float,
+    ) -> SignalCandidate | None:
+        if f.rel_move > 0:
+            # YES rallied → fade by buying NO.
             side = Side.NO
             price = m.no_ask
-            prob_real = 1.0 - target
+            prob_real = 1.0 - prob_real_yes_mid
             liquidity = m.no_liquidity_usd
             spread = m.no_spread
         else:
-            # YES crashed too hard → buy YES.
             side = Side.YES
             price = m.yes_ask
-            prob_real = target
+            prob_real = prob_real_yes_mid
             liquidity = m.yes_liquidity_usd
             spread = m.yes_spread
 
@@ -101,15 +130,29 @@ class OverreactionDetector(SignalDetector):
             liquidity_usd=liquidity,
             spread=spread,
             rationale=(
-                f"{side.value} fade: YES moved {rel_move:+.2%} in "
-                f"{settings.overreaction_window_minutes}m (anchor {anchor:.3f} → {m.yes_mid:.3f}); "
-                f"target reversion to {target:.3f}"
+                f"{side.value} fade · score={score.score:.2f} · "
+                f"move={f.rel_move:+.2%} · vel={f.velocity:.3%}/min · "
+                f"vol_z={f.volume_z:+.2f} · spike={f.spike_ratio:.2f}"
             ),
             context={
-                "anchor_price": anchor,
-                "current_yes_mid": m.yes_mid,
-                "rel_move": rel_move,
-                "reversion_target": target,
-                "volume_24h": m.volume_24h,
+                "anchor_mid": f.anchor_mid,
+                "current_mid": f.current_mid,
+                "rel_move": f.rel_move,
+                "velocity": f.velocity,
+                "spike_ratio": f.spike_ratio,
+                "persistence": f.persistence,
+                "realized_vol": f.realized_vol,
+                "volume_z": f.volume_z,
+                "score": score.score,
+                "score_breakdown": {
+                    "magnitude": score.magnitude,
+                    "velocity": score.velocity,
+                    "volume": score.volume,
+                    "spike": score.spike,
+                    "persistence_penalty": score.persistence_penalty,
+                    "vol_penalty": score.vol_penalty,
+                },
+                "prob_real_yes_mid": prob_real_yes_mid,
+                "ticks": f.ticks,
             },
         )
