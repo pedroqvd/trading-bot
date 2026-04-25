@@ -17,7 +17,10 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.database import session_scope
 from app.database.models import Position, PositionStatus
+from app.monitoring.edge_health import EdgeHealth, EdgeVerdict, HealthState, health_multiplier
 from app.monitoring.logger import get_logger
+from app.portfolio.portfolio_optimizer import PortfolioOptimizer, PortfolioThrottle
+from app.risk.adaptive_risk import combined_adjustment
 from app.risk.circuit_breaker import CircuitBreaker
 from app.risk.risk_state import (
     MarketRiskSnapshot,
@@ -37,6 +40,8 @@ class RiskDecision:
     kelly_multiplier: float = 1.0
     strategy_snapshot: Optional[StrategyRiskSnapshot] = None
     market_snapshot: Optional[MarketRiskSnapshot] = None
+    edge_verdict: Optional[EdgeVerdict] = None
+    portfolio_throttle: Optional[PortfolioThrottle] = None
 
     @classmethod
     def reject(cls, reason: str, **kw) -> "RiskDecision":
@@ -51,6 +56,8 @@ class RiskManager:
     def __init__(self) -> None:
         self.breaker = CircuitBreaker()
         self.state = RiskState()
+        self.optimizer = PortfolioOptimizer()
+        self.edge_health = EdgeHealth()
 
     def check(
         self,
@@ -64,6 +71,10 @@ class RiskManager:
         spread: Optional[float],
         current_equity_usd: float,
         quality_score: Optional[float] = None,
+        side=None,
+        question: str = "",
+        slug: str = "",
+        realized_vol: float = 0.0,
     ) -> RiskDecision:
         if suggested_size_usd <= 0:
             return RiskDecision.reject("Kelly size non-positive")
@@ -83,10 +94,22 @@ class RiskManager:
         if spread is not None and spread > settings.max_spread:
             return RiskDecision.reject(f"Spread {spread:.4f} exceeds {settings.max_spread:.4f}")
 
+        # --- Edge health ------------------------------------------------------
+        verdict = self.edge_health.evaluate_and_alert(strategy)
+        if verdict.state == HealthState.DISABLED:
+            return RiskDecision.reject(
+                f"strategy '{strategy}' DISABLED: {verdict.reason}",
+                edge_verdict=verdict,
+            )
+        health_mult = health_multiplier(verdict.state)
+        if health_mult < 1.0:
+            suggested_size_usd *= health_mult
+
         # --- Adaptive strategy checks -----------------------------------------
         strat = self.state.strategy_snapshot(strategy, current_equity_usd)
         if strat.paused:
-            return RiskDecision.reject(strat.pause_reason, strategy_snapshot=strat)
+            return RiskDecision.reject(strat.pause_reason, strategy_snapshot=strat,
+                                       edge_verdict=verdict)
 
         if current_equity_usd > 0:
             strategy_cap = current_equity_usd * settings.max_strategy_exposure_pct
@@ -102,6 +125,32 @@ class RiskManager:
         # Apply post-loss Kelly scaling
         if strat.kelly_multiplier < 1.0:
             suggested_size_usd *= strat.kelly_multiplier
+
+        # --- Adaptive (vol + recovery) multipliers ---------------------------
+        adjustment = combined_adjustment(realized_vol=realized_vol)
+        if adjustment.multiplier < 1.0:
+            suggested_size_usd *= adjustment.multiplier
+
+        # --- Portfolio optimizer -----------------------------------------------
+        throttle: Optional[PortfolioThrottle] = None
+        if condition_id:
+            throttle = self.optimizer.evaluate(
+                strategy=strategy,
+                condition_id=condition_id,
+                side=side,
+                question=question,
+                slug=slug,
+                equity_usd=current_equity_usd,
+            )
+            if throttle.blocked:
+                return RiskDecision.reject(
+                    f"portfolio: {throttle.reason}",
+                    strategy_snapshot=strat,
+                    edge_verdict=verdict,
+                    portfolio_throttle=throttle,
+                )
+            if throttle.multiplier < 1.0:
+                suggested_size_usd *= throttle.multiplier
 
         # --- Per-market checks ------------------------------------------------
         market_snap: Optional[MarketRiskSnapshot] = None
@@ -155,12 +204,13 @@ class RiskManager:
                 market_snapshot=market_snap,
             )
 
-        verdict = self.breaker.evaluate(current_equity_usd)
-        if verdict.tripped:
+        breaker_verdict = self.breaker.evaluate(current_equity_usd)
+        if breaker_verdict.tripped:
             return RiskDecision.reject(
-                f"circuit breaker {verdict.state.value}: {verdict.reason}",
+                f"circuit breaker {breaker_verdict.state.value}: {breaker_verdict.reason}",
                 strategy_snapshot=strat,
                 market_snapshot=market_snap,
+                edge_verdict=verdict,
             )
 
         return RiskDecision.approve(
@@ -168,9 +218,9 @@ class RiskManager:
             details={
                 "open_exposure_usd": exposure,
                 "open_positions": open_count,
-                "breaker_state": verdict.state.value,
-                "drawdown_pct": verdict.drawdown_pct,
-                "daily_pnl_pct": verdict.daily_pnl_pct,
+                "breaker_state": breaker_verdict.state.value,
+                "drawdown_pct": breaker_verdict.drawdown_pct,
+                "daily_pnl_pct": breaker_verdict.daily_pnl_pct,
                 "strategy": strategy,
                 "strategy_kelly_multiplier": strat.kelly_multiplier,
                 "strategy_consecutive_losses": strat.consecutive_losses,
@@ -179,10 +229,19 @@ class RiskManager:
                     market_snap.open_exposure_usd if market_snap else 0.0
                 ),
                 "quality_score": quality_score,
+                "edge_state": verdict.state.value,
+                "edge_health_multiplier": health_mult,
+                "adaptive_multiplier": adjustment.multiplier,
+                "adaptive_notes": adjustment.notes,
+                "portfolio_multiplier": (throttle.multiplier if throttle else 1.0),
+                "portfolio_category": (throttle.category if throttle else None),
+                "portfolio_notes": (throttle.notes if throttle else []),
             },
             kelly_multiplier=strat.kelly_multiplier,
             strategy_snapshot=strat,
             market_snapshot=market_snap,
+            edge_verdict=verdict,
+            portfolio_throttle=throttle,
         )
 
     # -----------------------------------------------------------------------

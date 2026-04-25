@@ -68,6 +68,22 @@ class Settings(BaseSettings):
     arbitrage_min_exec_confidence: float = 0.60           # 0..1 book-walk confidence floor
     arbitrage_size_safety_multiplier: float = 1.10        # ask 10% more depth than we use
 
+    # --- Momentum edge (Phase 2) ---------------------------------------------
+    momentum_window_minutes: int = 30
+    momentum_min_score: float = 0.65
+    momentum_min_velocity_pct_per_min: float = 0.003     # 0.3 %/min sustained
+    momentum_min_volume_z: float = 1.0
+    momentum_min_persistence: float = 0.70               # >70% of ticks in same direction
+    momentum_max_realized_vol: float = 0.08
+    momentum_max_spread_volatility: float = 0.012        # spread must be stable
+    momentum_take_profit: float = 0.05
+    momentum_stop_loss: float = 0.04
+    momentum_max_hold_minutes: int = 180
+    momentum_min_price: float = 0.10                     # avoid degenerate extremes
+    momentum_max_price: float = 0.90
+    overreaction_block_when_momentum_above: float = 0.55  # mutual exclusion threshold
+    momentum_block_when_overreaction_above: float = 0.55
+
     # --- Risk ----------------------------------------------------------------
     kelly_fraction: float = 0.25
     max_position_pct: float = 0.05
@@ -87,9 +103,40 @@ class Settings(BaseSettings):
     loss_streak_recovery_trades: int = 2    # N wins to reset the penalty
     daily_strategy_loss_cap_pct: float = 0.03   # 3% of equity lost by a single strategy pauses it
 
+    # --- Risk 2.0 (Phase 2) --------------------------------------------------
+    # Volatility-adaptive sizing: shrink risk when realised vol is high.
+    vol_adaptive_enabled: bool = True
+    vol_adaptive_low: float = 0.01      # below this realised vol, full size
+    vol_adaptive_high: float = 0.10     # above this, multiplier hits the floor
+    vol_adaptive_floor: float = 0.30    # minimum size multiplier in high-vol regime
+
+    # Strategy auto-shutdown thresholds (consult edge_health rolling window)
+    edge_health_min_trades: int = 8
+    edge_health_min_expectancy_usd: float = 0.0
+    edge_health_max_drawdown_pct: float = 0.20      # 20% strategy DD → disable
+
+    # Recovery mode: when *any* strategy is in a deep streak, reduce global Kelly.
+    recovery_mode_loss_threshold: int = 6
+    recovery_mode_kelly_multiplier: float = 0.5
+
+    # --- Portfolio optimizer (Phase 2) ---------------------------------------
+    portfolio_max_category_exposure_pct: float = 0.25
+    portfolio_correlated_throttle_pct: float = 0.5  # halve size when correlated bucket already loaded
+    portfolio_capital_alloc_overreaction: float = 0.40
+    portfolio_capital_alloc_arbitrage: float = 0.40
+    portfolio_capital_alloc_momentum: float = 0.20
+
     # --- Execution -----------------------------------------------------------
     slippage_bps: float = 20.0
     taker_fee_bps: float = 0.0
+
+    # Realistic execution (Phase 2)
+    exec_latency_min_ms: int = 50
+    exec_latency_max_ms: int = 250
+    exec_dynamic_slippage_enabled: bool = True
+    exec_dynamic_slippage_size_factor: float = 0.5   # bps per % of consumed depth
+    exec_dynamic_slippage_vol_factor: float = 100.0  # bps per unit realised vol
+    exec_failure_rate: float = 0.0                   # 0..1, used in backtest to drop fills
 
     # Smart execution — wait for micro-retracement before paying the spread
     smart_order_enabled: bool = True
@@ -97,6 +144,11 @@ class Settings(BaseSettings):
     smart_order_passive_offset: float = 0.01   # 1 cent inside the spread
     smart_order_max_price_drift: float = 0.02  # abort if price moves 2¢ against us while waiting
     smart_order_poll_ms: int = 500
+
+    # --- API + Frontend (Phase 2) --------------------------------------------
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
+    api_cors_origins: str = "*"   # comma-separated; "*" allows all in dev
 
     # --- Monitoring ----------------------------------------------------------
     prometheus_port: int = 9108

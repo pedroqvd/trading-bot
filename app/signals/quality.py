@@ -87,3 +87,69 @@ def overreaction_hard_filters_pass(f: MarketFeatures) -> tuple[bool, str]:
     if f.realized_vol > settings.overreaction_max_realized_vol:
         return False, f"realised vol {f.realized_vol:.2%} too high"
     return True, ""
+
+
+# ---------------------------------------------------------------------------
+# Momentum scoring (Phase 2)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class MomentumScore:
+    score: float
+    velocity: float
+    volume: float
+    persistence: float
+    low_reversion: float
+    spread_stability: float
+
+    @property
+    def passes_filter(self) -> bool:
+        return self.score >= settings.momentum_min_score
+
+
+def momentum_score(f: MarketFeatures) -> MomentumScore:
+    """Composite momentum confidence in `[0, 1]`.
+
+    Rewards: sustained velocity, high volume, strong persistence, low immediate
+    mean-reversion, stable spreads (a churning book is not a clean trend).
+    """
+    vel = _saturate(abs(f.velocity), 0.012)
+    vol = _logistic(f.volume_z, midpoint=0.5, slope=1.5)
+    persistence = _saturate(max(0.0, f.persistence - 0.5), 0.5)  # >0.5 contributes
+    low_rev = 1.0 - _saturate(f.mean_reversion_signal, 0.5)        # high reversion → low score
+    # Spread stability is *good* when low — invert.
+    spread_pen = _saturate(f.spread_volatility, settings.momentum_max_spread_volatility)
+    spread_stab = 1.0 - spread_pen
+
+    weights = (0.30, 0.20, 0.25, 0.15, 0.10)
+    raw = (weights[0] * vel + weights[1] * vol + weights[2] * persistence
+           + weights[3] * low_rev + weights[4] * spread_stab)
+
+    # Realised-vol penalty: very high vol is just chaos, not a clean trend.
+    vol_penalty = _saturate(f.realized_vol, settings.momentum_max_realized_vol)
+    raw = raw * (1.0 - 0.4 * vol_penalty)
+    return MomentumScore(
+        score=max(0.0, min(1.0, raw)),
+        velocity=vel,
+        volume=vol,
+        persistence=persistence,
+        low_reversion=low_rev,
+        spread_stability=spread_stab,
+    )
+
+
+def momentum_hard_filters_pass(f: MarketFeatures) -> tuple[bool, str]:
+    if f.ticks < settings.overreaction_min_ticks:
+        return False, f"need >={settings.overreaction_min_ticks} ticks, have {f.ticks}"
+    if abs(f.velocity) < settings.momentum_min_velocity_pct_per_min:
+        return False, f"velocity {f.velocity:.3%}/min below momentum threshold"
+    if f.volume_z < settings.momentum_min_volume_z:
+        return False, f"volume z {f.volume_z:.2f} below momentum threshold"
+    if f.persistence < settings.momentum_min_persistence:
+        return False, f"persistence {f.persistence:.2f} below threshold (no clean trend)"
+    if f.realized_vol > settings.momentum_max_realized_vol:
+        return False, f"realised vol {f.realized_vol:.2%} too high for momentum"
+    if f.spread_volatility > settings.momentum_max_spread_volatility:
+        return False, f"spread instability {f.spread_volatility:.4f} too high"
+    if not (settings.momentum_min_price <= f.current_mid <= settings.momentum_max_price):
+        return False, f"price {f.current_mid:.3f} outside momentum band"
+    return True, ""

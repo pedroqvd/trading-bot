@@ -72,6 +72,9 @@ class ArbitrageStrategy(Strategy):
             spread=None,
             current_equity_usd=current_equity_usd,
             quality_score=plan.confidence,
+            side=signal.side,
+            question=signal.market.question,
+            slug=signal.market.slug,
         )
         if not decision.approved:
             return StrategyResult(False, [], reason=decision.reason, risk=decision)

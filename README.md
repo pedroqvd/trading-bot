@@ -1,8 +1,14 @@
 # Polymarket Prediction-Market Trading Bot
 
-Production-grade automated trading system for binary prediction markets (Polymarket).
-The bot does **not** try to forecast the future — it detects when the market is *wrong*
-and exploits the statistical edge.
+Production-grade multi-edge automated trading system for binary prediction
+markets (Polymarket). The bot does **not** try to forecast the future — it
+detects when the market is *wrong*, sizes adaptively against an edge-health
+signal, and ships a portfolio-aware risk filter on top.
+
+> **Phase 2 — multi-edge, execution-aware, portfolio-driven, observable.**
+> Adds a third edge (momentum), a portfolio optimiser, vol-adaptive sizing,
+> auto-shutdown on broken edges, realistic execution simulation, an HTTP
+> API, and a reference React dashboard.
 
 ```
                   ┌───────────────────────────┐
@@ -244,11 +250,96 @@ Arbitrage legs **always go taker** — they cannot risk a leg sitting passive wh
   second leg fails, an alert is raised and the open leg is handed to the
   position manager for exit.
 
+## Phase 2 — Multi-edge & full-stack
+
+### Third edge: momentum (continuation)
+`app/signals/momentum.py` and `app/strategies/momentum_strategy.py` add a
+trend-following edge that is *mutually exclusive* with overreaction:
+
+- `momentum_score` rewards velocity, volume z-score, persistence, low
+  immediate mean-reversion, and stable spreads — penalised by realised vol.
+- A high overreaction score blocks momentum (and vice-versa) so the same
+  market never produces both signals.
+- A separate Bayesian estimator (`bayesian_prob_real_momentum`) projects
+  continuation rather than reversion.
+
+### Portfolio optimizer
+`app/portfolio/portfolio_optimizer.py` consults the open book before final
+approval:
+
+- **Categoriser** auto-tags markets (politics / crypto / macro / sports / …).
+- **Category exposure cap** (`PORTFOLIO_MAX_CATEGORY_EXPOSURE_PCT`).
+- **Correlation throttle**: same category + same direction halves the size.
+- **Capital allocation** per strategy
+  (`PORTFOLIO_CAPITAL_ALLOC_*` knobs).
+- **Position throttling** as you approach the category / strategy caps.
+
+### Risk 2.0
+`app/risk/adaptive_risk.py`:
+- **Volatility-adaptive sizing** — linear floor when realised vol is high.
+- **Recovery mode** — global Kelly multiplier when ANY strategy has K losses
+  in a row.
+- **Per-strategy auto-shutdown** via `app/monitoring/edge_health.py`:
+  *HEALTHY → WATCH → IMPAIRED → DISABLED* states. Disabled strategies are
+  rejected at the risk gate AND the transition is alerted via the webhook.
+
+### Realistic execution
+`app/execution/realistic_execution.py`:
+- Latency budget sampler (`EXEC_LATENCY_MIN_MS` / `MAX_MS`).
+- **Dynamic slippage** = base + size factor × consumed-depth% + vol factor × realised vol.
+- Configurable execution-failure rate for backtest realism.
+
+### Real-time data layer
+`app/data/ingestion.py` runs an `IngestionLoop` thread that decouples market
+data refresh from the trading loop and feeds an in-memory `SnapshotCache` the
+API can read without touching Polymarket.
+
+### Advanced metrics
+`app/portfolio/advanced_metrics.py` adds **Sharpe, Sortino, MAE, MFE** on top
+of the existing expectancy / profit-factor / drawdown breakdown.
+
+### HTTP API (FastAPI)
+`app/api/` exposes:
+
+| Endpoint | What it returns |
+| -------- | --------------- |
+| `GET /metrics?period=24h\|7d\|30d\|all` | aggregate + per-strategy stats |
+| `GET /equity?period=…` | equity-curve series |
+| `GET /positions?status=…&limit=…` | open + closed positions |
+| `GET /trades?limit=…&status=…` | recent trades |
+| `GET /bot/status` | runner state |
+| `POST /bot/start` / `POST /bot/stop` | thread-safe runner control |
+| `GET /health` | liveness probe |
+
+CORS is enabled (`API_CORS_ORIGINS`, defaults to `*` in dev).
+
+Run: `python -m app.api_main` or `docker compose up api`.
+
+### Frontend dashboard
+`frontend/` is a self-contained Vite + React + TypeScript reference UI:
+
+- `frontend/src/services/api.ts` — typed API client (drop into Lovable).
+- `frontend/src/App.tsx` — equity chart, metric cards, strategy table,
+  open positions, recent trades, start/stop control, period switcher.
+- Polling at 5s with skeleton loaders + error banner.
+
+Configure with `VITE_API_URL` (defaults to `http://localhost:8000`).
+
+### Full-stack docker compose
+
+```bash
+docker compose up -d --build
+# bot       → http://localhost:9108/metrics  (Prometheus)
+# api       → http://localhost:8000          (FastAPI)
+# frontend  → http://localhost:5173          (nginx + built React)
+```
+
 ## Tests
 
 ```bash
 pytest tests/
 ```
 
-16 tests covering math primitives, Kelly sizing bounds, arbitrage detector,
-and the backtest engine.
+**78 tests** covering math primitives, signal quality, Bayesian prob_real,
+book-walk, risk-state, momentum, portfolio optimiser, edge health, adaptive
+risk, realistic execution, backtest engine, and the FastAPI layer.

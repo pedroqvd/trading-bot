@@ -30,9 +30,11 @@ from app.portfolio.strategy_metrics import per_strategy_report
 from app.risk.risk_manager import RiskManager
 from app.signals.arbitrage import ArbitrageDetector
 from app.signals.base import SignalCandidate, SignalDetector
+from app.signals.momentum import MomentumDetector
 from app.signals.overreaction import OverreactionDetector
 from app.strategies.arbitrage_strategy import ArbitrageStrategy
 from app.strategies.base import Strategy
+from app.strategies.momentum_strategy import MomentumStrategy
 from app.strategies.overreaction_strategy import OverreactionStrategy
 
 log = get_logger(__name__)
@@ -51,10 +53,12 @@ class TradingRunner:
         self.detectors: list[SignalDetector] = [
             ArbitrageDetector(),
             OverreactionDetector(self.store),
+            MomentumDetector(self.store),
         ]
         self.strategies: dict[str, Strategy] = {
             "arbitrage": ArbitrageStrategy(self.risk),
             "overreaction": OverreactionStrategy(self.risk),
+            "momentum": MomentumStrategy(self.risk),
         }
 
         self._shutdown = False

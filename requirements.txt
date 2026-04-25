@@ -36,3 +36,7 @@ pytest-cov==5.0.0
 
 # CLI
 click==8.1.7
+
+# API (Phase 2)
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
