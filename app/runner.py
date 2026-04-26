@@ -16,6 +16,7 @@ from app.database.models import (
     Market,
     Signal as SignalRow,
     SignalType,
+    Trade,
     TradeStatus,
 )
 from app.execution.executor import Executor
@@ -28,6 +29,7 @@ from app.monitoring.metrics import LOOP_LATENCY, start_metrics_server
 from app.portfolio.portfolio import Portfolio
 from app.portfolio.strategy_metrics import per_strategy_report
 from app.risk.risk_manager import RiskManager
+from app.data.ingestion import SnapshotCache
 from app.signals.arbitrage import ArbitrageDetector
 from app.signals.base import SignalCandidate, SignalDetector
 from app.signals.momentum import MomentumDetector
@@ -49,6 +51,8 @@ class TradingRunner:
         self.portfolio = Portfolio()
         self.risk = RiskManager()
         self.position_manager = PositionManager(self.client, self.executor)
+        # Shared with the API layer so /markets can serve live data.
+        self.snapshot_cache = SnapshotCache()
 
         self.detectors: list[SignalDetector] = [
             ArbitrageDetector(),
@@ -88,6 +92,7 @@ class TradingRunner:
             live=settings.live_trading_enabled,
             capital=settings.capital_usd,
         )
+        self._reconcile_pending_trades()
         while not self._shutdown:
             loop_started = time.monotonic()
             try:
@@ -105,8 +110,29 @@ class TradingRunner:
                 time.sleep(1)
         log.info("runner.stopped")
 
+    def _reconcile_pending_trades(self) -> None:
+        """Cancel any PENDING trades left behind by a previous crash."""
+        with session_scope() as session:
+            orphans = session.execute(
+                select(Trade).where(Trade.status == TradeStatus.PENDING)
+            ).scalars().all()
+            if not orphans:
+                return
+            for trade in orphans:
+                trade.status = TradeStatus.CANCELED
+                trade.error = "Orphaned on restart — outcome unknown; inspect exchange ledger"
+            log.warning("runner.pending_reconciled", count=len(orphans))
+            send_alert(
+                "Orphaned PENDING trades found on startup",
+                f"{len(orphans)} PENDING trade(s) marked CANCELED. Verify fills on the exchange.",
+                severity="warning",
+            )
+
     def run_once(self) -> None:
+        import time as _time
+        t0 = _time.monotonic()
         quotes = self.store.refresh_universe()
+        self.snapshot_cache.update(quotes, duration_ms=int((_time.monotonic() - t0) * 1000))
 
         # Mark-to-market + snapshot BEFORE generating new orders
         summary = self.portfolio.snapshot(quotes)

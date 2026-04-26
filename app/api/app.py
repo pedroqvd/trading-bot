@@ -1,13 +1,16 @@
 """FastAPI application factory."""
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.auth import require_api_key
 from app.api.routes import bot as bot_routes
 from app.api.routes import equity as equity_routes
+from app.api.routes import markets as markets_routes
 from app.api.routes import metrics as metrics_routes
 from app.api.routes import positions as positions_routes
+from app.api.routes import risk as risk_routes
 from app.api.routes import trades as trades_routes
 from app.config import settings
 from app.database import init_db
@@ -37,11 +40,16 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.include_router(metrics_routes.router)
-    app.include_router(equity_routes.router)
-    app.include_router(positions_routes.router)
-    app.include_router(trades_routes.router)
-    app.include_router(bot_routes.router)
+    # /health is always open (liveness probe).  Everything else requires an
+    # API key when API_KEY is configured.
+    auth = Depends(require_api_key)
+    app.include_router(metrics_routes.router, dependencies=[auth])
+    app.include_router(equity_routes.router, dependencies=[auth])
+    app.include_router(positions_routes.router, dependencies=[auth])
+    app.include_router(trades_routes.router, dependencies=[auth])
+    app.include_router(bot_routes.router, dependencies=[auth])
+    app.include_router(risk_routes.router, dependencies=[auth])
+    app.include_router(markets_routes.router, dependencies=[auth])
 
     @app.get("/health", tags=["meta"])
     def health() -> dict:

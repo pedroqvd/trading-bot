@@ -24,6 +24,9 @@ class RunnerProxy:
         self._runner = None
         self._started_at: Optional[datetime] = None
         self._last_error: Optional[str] = None
+        # Exposed so the /markets route can serve the live snapshot without
+        # going through the runner directly.
+        self.snapshot_cache = None
 
     @property
     def running(self) -> bool:
@@ -50,6 +53,7 @@ class RunnerProxy:
             from app.runner import TradingRunner
             self._runner = TradingRunner()
             self._runner.install_signal_handlers()
+            self.snapshot_cache = self._runner.snapshot_cache
             self._started_at = datetime.utcnow()
             self._last_error = None
             self._thread = threading.Thread(
