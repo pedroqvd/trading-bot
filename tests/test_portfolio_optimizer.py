@@ -76,7 +76,7 @@ def test_optimizer_blocks_when_category_cap_hit():
 def test_optimizer_throttles_when_correlated_bucket_loaded():
     # Same category + same direction → correlated exposure halves the multiplier.
     m1 = _seed_market("0x10", "Bitcoin moves up", slug="btc-1")
-    m2 = _seed_market("0x11", "Ethereum moves up", slug="eth-1")
+    _seed_market("0x11", "Ethereum moves up", slug="eth-1")
     cat_cap = 100_000 * settings.portfolio_max_category_exposure_pct
     _seed_open_position("overreaction", m1, entry_size_usd=cat_cap * 0.6, side=Side.YES)
     opt = PortfolioOptimizer()

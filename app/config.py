@@ -149,6 +149,9 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     api_cors_origins: str = "*"   # comma-separated; "*" allows all in dev
+    # If set, every API request must carry X-API-Key matching this value.
+    # Leave empty to disable auth (dev / local only).
+    api_key: Optional[str] = None
 
     # --- Monitoring ----------------------------------------------------------
     prometheus_port: int = 9108

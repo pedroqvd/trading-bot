@@ -107,3 +107,73 @@ def test_bot_start_stop_cycle_safely(client, monkeypatch):
     r = client.post("/bot/start")
     assert r.status_code == 200
     assert r.json()["running"] is True
+
+
+def test_risk_events_endpoint_empty(client):
+    r = client.get("/risk/events")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_risk_events_endpoint_with_data(client):
+    from app.database.models import RiskEvent
+    with session_scope() as session:
+        session.add(RiskEvent(
+            kind="daily_loss", severity="warning",
+            message="Daily loss cap hit", details={"strategy": "overreaction"},
+        ))
+    r = client.get("/risk/events?limit=10")
+    assert r.status_code == 200
+    rows = r.json()
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "daily_loss"
+    assert rows[0]["severity"] == "warning"
+
+
+def test_markets_endpoint_empty_when_no_runner(client):
+    r = client.get("/markets")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 0
+    assert body["is_stale"] is True
+
+
+def test_api_key_auth_rejects_wrong_key(monkeypatch):
+    """When API_KEY is configured, wrong keys must get 401."""
+    from app import config as cfg_module
+    from app.config import Settings
+    patched = Settings.model_construct(
+        **{**cfg_module.settings.model_dump(), "api_key": "secret123"}
+    )
+    monkeypatch.setattr(cfg_module, "settings", patched)
+
+    # Patch auth module settings reference too
+    import app.api.auth as auth_module
+    monkeypatch.setattr(auth_module, "settings", patched)
+
+    app_under_test = create_app()
+    c = TestClient(app_under_test, raise_server_exceptions=False)
+
+    r = c.get("/metrics?period=24h", headers={"X-API-Key": "wrong"})
+    assert r.status_code == 401
+
+    # Correct key must pass
+    r = c.get("/metrics?period=24h", headers={"X-API-Key": "secret123"})
+    assert r.status_code == 200
+
+
+def test_health_never_requires_api_key(monkeypatch):
+    """/health must always be open."""
+    from app import config as cfg_module
+    from app.config import Settings
+    patched = Settings.model_construct(
+        **{**cfg_module.settings.model_dump(), "api_key": "secret123"}
+    )
+    monkeypatch.setattr(cfg_module, "settings", patched)
+    import app.api.auth as auth_module
+    monkeypatch.setattr(auth_module, "settings", patched)
+
+    app_under_test = create_app()
+    c = TestClient(app_under_test, raise_server_exceptions=False)
+    r = c.get("/health")
+    assert r.status_code == 200

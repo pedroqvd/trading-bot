@@ -40,7 +40,7 @@ class OrderBook:
     def top_liquidity_usd(self, depth: int = 5) -> float:
         """Notional USD resting in the top `depth` levels of both sides."""
         def side_sum(levels: list[BookLevel]) -> float:
-            return sum(l.price * l.size for l in levels[:depth])
+            return sum(lv.price * lv.size for lv in levels[:depth])
         return side_sum(self.bids) + side_sum(self.asks)
 
 

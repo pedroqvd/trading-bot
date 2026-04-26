@@ -179,8 +179,8 @@ class PolymarketClient:
         asks_raw = data.get("asks", [])
         bids = [BookLevel(price=float(x.get("price", 0)), size=float(x.get("size", 0))) for x in bids_raw]
         asks = [BookLevel(price=float(x.get("price", 0)), size=float(x.get("size", 0))) for x in asks_raw]
-        bids.sort(key=lambda l: l.price, reverse=True)
-        asks.sort(key=lambda l: l.price)
+        bids.sort(key=lambda lv: lv.price, reverse=True)
+        asks.sort(key=lambda lv: lv.price)
         return OrderBook(bids=bids, asks=asks)
 
     # -----------------------------------------------------------------------
