@@ -100,19 +100,23 @@ export interface BotControlResponse {
   message: string;
 }
 
-const API_URL =
-  (typeof import.meta !== "undefined" &&
-    (import.meta as any).env?.VITE_API_URL) ||
-  "http://localhost:8000";
+const _env =
+  typeof import.meta !== "undefined" ? (import.meta as any).env ?? {} : {};
+
+const API_URL: string = _env.VITE_API_URL ?? "http://localhost:8000";
+const API_KEY: string = _env.VITE_API_KEY ?? "";
 
 async function request<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(init.headers as Record<string, string> | undefined),
+  };
+  if (API_KEY) headers["X-API-Key"] = API_KEY;
+
+  const response = await fetch(`${API_URL}${path}`, { ...init, headers });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new Error(`${response.status} ${response.statusText}: ${text}`);
