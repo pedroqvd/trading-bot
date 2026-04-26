@@ -25,7 +25,12 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        # Exclude live-trading blockchain packages (py-clob-client / eth-account / web3).
+        # They are never imported during tests (conditional import inside methods)
+        # and their pinned versions conflict with each other on fresh resolves.
+        run: |
+          grep -v -E '^\s*(py-clob-client|eth-account|web3)' requirements.txt \
+            | pip install -r /dev/stdin
 
       - name: Run tests
         env:

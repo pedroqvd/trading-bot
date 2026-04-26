@@ -1,12 +1,9 @@
 """GET /metrics — aggregate performance summary."""
 from __future__ import annotations
 
-from datetime import timedelta
-
 from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 
-from app.api.dependencies import period_to_since
 from app.api.schemas import MetricsResponse, Period, StrategyBreakdown
 from app.database import session_scope
 from app.database.models import EquitySnapshot, Position, PositionStatus
@@ -21,7 +18,6 @@ router = APIRouter(tags=["metrics"])
 
 @router.get("/metrics", response_model=MetricsResponse)
 def metrics(period: Period = Query("24h")) -> MetricsResponse:
-    since = period_to_since(period)
     lookback_days = {"24h": 1, "7d": 7, "30d": 30, "all": 3650}[period]
     pm = PortfolioMetrics()
     perf = pm.compute(lookback_days=lookback_days)
