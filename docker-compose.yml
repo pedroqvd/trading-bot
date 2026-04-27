@@ -42,17 +42,6 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "app.api_main"]
 
-  frontend:
-    build:
-      context: ./frontend
-      args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
-    depends_on:
-      - api
-    ports:
-      - "5173:80"
-    restart: unless-stopped
-
   backtest:
     build: .
     depends_on:
