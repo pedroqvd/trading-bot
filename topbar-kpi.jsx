@@ -2,7 +2,7 @@
 // Top bar, KPI strip, Bot panel
 // =====================================================================
 
-function TopBar({ period, setPeriod, status, onStart, onStop, mockMode, onCmd }) {
+function TopBar({ period, setPeriod, status, statusRefetch, onStart, onStop, mockMode, onCmd, pushToast }) {
   const env = "produção";
   return (
     <div className="topbar">
@@ -20,16 +20,18 @@ function TopBar({ period, setPeriod, status, onStart, onStop, mockMode, onCmd })
         ))}
       </div>
       <div className="topbar-right">
+        <DensityToggle />
+        <ModeToggle status={status} refetch={statusRefetch} />
         <button className="btn btn-ghost" onClick={onCmd} title="Paleta de comandos (⌘K)">
           <span style={{ fontSize: 13 }}>⌘</span>K
         </button>
         <BotStatusPill status={status?.running ? "running" : "stopped"} error={status?.last_error} />
-        {status?.dry_run && <span className="pill dry-run">Simulação</span>}
         {status?.running ? (
           <button className="btn btn-danger" onClick={onStop}>■ Parar</button>
         ) : (
           <button className="btn btn-primary" onClick={onStart}>▶ Iniciar</button>
         )}
+        <KillSwitch status={status} refetch={statusRefetch} pushToast={pushToast} />
       </div>
     </div>
   );
@@ -45,7 +47,7 @@ function KpiCard({ label, value, format, delta, deltaClass, valueClass = "", spa
         {typeof value === "number" ? <AnimatedNumber value={value} format={format} /> : value}
       </div>
       {delta !== undefined && <div className={`kpi-delta ${deltaClass || ""}`}>{delta}</div>}
-      {sparkline && <div className="sparkline-wrap"><Sparkline points={sparkline} /></div>}
+      {sparkline && <div className="sparkline-wrap"><KpiSparkline points={sparkline} /></div>}
     </div>
   );
 }

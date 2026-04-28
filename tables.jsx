@@ -45,9 +45,9 @@ function SortHeader({ label, sortKey, sort, numeric }) {
 }
 
 // ---------------- Strategy table ----------------
-function StrategyTable({ rows, refetching }) {
+function StrategyTable({ rows, sparklines, refetching }) {
   const sort = useSort("total_pnl_usd", "desc");
-  if (!rows) return <div className="card"><div className="card-header"><div className="card-title">Strategy health</div></div><Skel w="100%" h={140} /></div>;
+  if (!rows) return <div className="card"><div className="card-header"><div className="card-title">Saúde das estratégias</div></div><Skel w="100%" h={140} /></div>;
 
   const sorted = sort.sort(rows);
   return (
@@ -55,7 +55,7 @@ function StrategyTable({ rows, refetching }) {
       {refetching && <div className="refetch-dot on" />}
       <div className="card-header" style={{ padding: "16px 16px 12px" }}>
         <div className="card-title">Saúde das estratégias</div>
-        <span className="card-sub">{rows.length} estratégias</span>
+        <span className="card-sub">{rows.length} estratégias · sparkline = PnL acumulado últimos 30 ciclos</span>
       </div>
       {rows.length === 0 ? (
         <div className="empty">Sem atividade de estratégia neste período.</div>
@@ -65,6 +65,7 @@ function StrategyTable({ rows, refetching }) {
             <thead>
               <tr>
                 <SortHeader label="Estratégia" sortKey="strategy" sort={sort} />
+                <th className="sparkline-cell">PnL</th>
                 <SortHeader label="Estado" sortKey="state" sort={sort} />
                 <SortHeader label="Operações" sortKey="trades" sort={sort} numeric />
                 <SortHeader label="Taxa de acerto" sortKey="win_rate" sort={sort} numeric />
@@ -78,6 +79,9 @@ function StrategyTable({ rows, refetching }) {
               {sorted.map(r => (
                 <tr key={r.strategy}>
                   <td style={{ fontWeight: 500 }}>{r.strategy}</td>
+                  <td className="sparkline-cell">
+                    <Sparkline values={sparklines?.[r.strategy]} width={80} height={22} />
+                  </td>
                   <td><StatePill kind={r.state.toLowerCase()} title={r.reason}>{r.state}</StatePill></td>
                   <td className="numeric mono">{Fmt.int(r.trades)}</td>
                   <td className="numeric mono">{(r.win_rate * 100).toFixed(1)}%</td>
@@ -229,7 +233,7 @@ function PositionsRiskCard({ positions, riskEvents, onOpenPosition, refetching }
 }
 
 // ---------------- Recent trades ----------------
-function TradesTable({ trades, refetching }) {
+function TradesTable({ trades, refetching, onJumpToLogs }) {
   const sort = useSort("created_at", "desc");
   if (!trades) return <div className="card"><div className="card-title">Operações recentes</div><Skel w="100%" h={120} /></div>;
   const recent = trades.slice(0, 25);
@@ -263,7 +267,19 @@ function TradesTable({ trades, refetching }) {
               {sorted.map(t => (
                 <tr key={t.id}>
                   <td className="mono txt-muted">{Fmt.timeAgo(t.created_at)}</td>
-                  <td className="market-q" title={t.market_question}>{t.market_question}</td>
+                  <td className="market-q" title={t.market_question}>
+                    {t.market_question}
+                    {onJumpToLogs && (
+                      <a
+                        className="lf-cid"
+                        style={{ marginLeft: 8 }}
+                        onClick={(e) => { e.stopPropagation(); onJumpToLogs(t.client_order_id); }}
+                        title={`Ver logs de ${t.client_order_id}`}
+                      >
+                        ≡ logs
+                      </a>
+                    )}
+                  </td>
                   <td className="txt-muted">{t.strategy}</td>
                   <td><SidePill side={t.market_side} /></td>
                   <td className="mono" style={{ color: t.order_side === "BUY" ? "var(--accent)" : "var(--no)" }}>{t.order_side}</td>

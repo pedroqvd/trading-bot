@@ -2,17 +2,78 @@
 // Position detail Sheet, Stop confirmation Dialog, Command palette, Toasts
 // =====================================================================
 
-function PositionDetailSheet({ pos, onClose }) {
+function PositionMiniChart({ history, entry, tp, sl }) {
+  if (!history || history.length < 2) return null;
+  const W = 280, H = 84, pad = 6;
+  const prices = history.map(p => p.p);
+  const min = Math.min(...prices, sl ?? Infinity, entry ?? Infinity);
+  const max = Math.max(...prices, tp ?? -Infinity, entry ?? -Infinity);
+  const span = max - min || 1;
+  const stepX = (W - pad * 2) / (history.length - 1);
+  const yFor = v => pad + (1 - (v - min) / span) * (H - pad * 2);
+  const pts = history.map((p, i) => `${pad + i * stepX},${yFor(p.p).toFixed(1)}`);
+  const last = prices[prices.length - 1];
+  const stroke = last >= (entry ?? last) ? "var(--accent)" : "var(--danger)";
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="pos-mini-chart" preserveAspectRatio="none" width="100%">
+      {/* TP/SL guides */}
+      {tp != null && tp >= min && tp <= max && (
+        <line x1={pad} x2={W - pad} y1={yFor(tp)} y2={yFor(tp)}
+              stroke="var(--accent)" strokeDasharray="4 4" strokeWidth="0.7" opacity="0.55" />
+      )}
+      {sl != null && sl >= min && sl <= max && (
+        <line x1={pad} x2={W - pad} y1={yFor(sl)} y2={yFor(sl)}
+              stroke="var(--danger)" strokeDasharray="4 4" strokeWidth="0.7" opacity="0.55" />
+      )}
+      {entry != null && (
+        <line x1={pad} x2={W - pad} y1={yFor(entry)} y2={yFor(entry)}
+              stroke="var(--text-dim)" strokeDasharray="2 4" strokeWidth="0.6" opacity="0.65" />
+      )}
+      <polyline points={pts.join(" ")} fill="none" stroke={stroke} strokeWidth="1.5" strokeLinejoin="round" />
+      <circle cx={pad + (history.length - 1) * stepX} cy={yFor(last)} r="2.2" fill={stroke} />
+    </svg>
+  );
+}
+
+function RelatedLogs({ correlation_id }) {
+  const [logs, setLogs] = React.useState([]);
+  React.useEffect(() => {
+    if (!correlation_id) return;
+    const refresh = () => setLogs(MockAPI.getLogs(40, { cid: correlation_id }));
+    refresh();
+    const id = setInterval(refresh, 4000);
+    return () => clearInterval(id);
+  }, [correlation_id]);
+  if (!logs || logs.length === 0) {
+    return <div className="empty" style={{ padding: 14, fontSize: 11 }}>Nenhum log relacionado encontrado.</div>;
+  }
+  return (
+    <div className="pos-related-logs">
+      {logs.map(l => (
+        <div className="rl-line" key={l.id}>
+          <span className="rl-time">{Fmt.timeOfDay(l.ts)}</span>
+          <span className={`log-level ${l.level}`} style={{ marginRight: 6 }}>{l.level}</span>
+          <span className="rl-msg">{l.msg}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PositionDetailSheet({ pos, onClose, onCloseNow, onJumpToLogs }) {
   if (!pos) return null;
   const isOpen = pos.status === "OPEN";
   const statusLabels = { OPEN: "ABERTA", CLOSED: "ENCERRADA", LIQUIDATED: "LIQUIDADA" };
+  const unrealized = pos.unrealized_pnl_usd;
+  const sign = pos.side === "YES" ? 1 : -1;
+  const livePrice = pos.current_price ?? pos.exit_price ?? pos.entry_price;
   return (
     <>
       <div className="sheet-overlay" onClick={onClose} />
       <aside className="sheet" role="dialog" aria-label="Detalhe da posição">
         <div className="sheet-head">
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="card-sub">Posição #{pos.id}</div>
+            <div className="card-sub">Posição #{pos.id} · {pos.correlation_id}</div>
             <div style={{ fontSize: 14, fontWeight: 500, marginTop: 4, lineHeight: 1.4 }} title={pos.market_question}>
               {pos.market_question}
             </div>
@@ -25,11 +86,51 @@ function PositionDetailSheet({ pos, onClose }) {
           <button className="btn btn-ghost" onClick={onClose} aria-label="Fechar">✕</button>
         </div>
         <div className="sheet-body">
+          {/* mini chart of price history */}
+          <div className="card-sub" style={{ marginBottom: 4 }}>Trajetória de preço</div>
+          <PositionMiniChart
+            history={pos.price_history}
+            entry={pos.entry_price}
+            tp={pos.take_profit}
+            sl={pos.stop_loss}
+          />
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "var(--text-dim)", padding: "0 4px" }}>
+            <span>entrada {pos.entry_price?.toFixed(3)}</span>
+            <span>atual <strong style={{ color: "var(--text)" }}>{livePrice?.toFixed(3)}</strong></span>
+            <span>SL {pos.stop_loss?.toFixed(3)} · TP {pos.take_profit?.toFixed(3)}</span>
+          </div>
+
+          {/* EV / Kelly cards (open positions only) */}
+          {isOpen && pos.ev_now != null && (
+            <div className="pos-evkelly">
+              <div className="pe-card">
+                <div className="pe-lbl">EV agora</div>
+                <div className={`pe-val ${pos.ev_now >= 0 ? "txt-pos" : "txt-neg"}`}>
+                  {(pos.ev_now >= 0 ? "+" : "") + (pos.ev_now * 100).toFixed(2) + "%"}
+                </div>
+              </div>
+              <div className="pe-card">
+                <div className="pe-lbl">Kelly atual</div>
+                <div className="pe-val">
+                  {(pos.kelly_now * 100).toFixed(2) + "%"}
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="kv">
             <span className="k">Slug</span><span className="v mono txt-muted">{pos.market_slug}</span>
             <span className="k">Preço de entrada</span><span className="v mono">{pos.entry_price.toFixed(3)}</span>
             <span className="k">Tamanho da entrada</span><span className="v mono">{Fmt.usdPrecise(pos.entry_size_usd)}</span>
             <span className="k">Cotas</span><span className="v mono">{Fmt.int(pos.shares)}</span>
+            {isOpen && unrealized != null && (
+              <>
+                <span className="k">PnL não realizado</span>
+                <span className={`v mono ${unrealized >= 0 ? "txt-pos" : "txt-neg"}`}>
+                  {(unrealized >= 0 ? "+" : "") + Fmt.usdPrecise(unrealized)}
+                </span>
+              </>
+            )}
             <span className="k">Realização de lucro</span><span className="v mono txt-pos">{pos.take_profit?.toFixed(3) ?? "—"}</span>
             <span className="k">Stop loss</span><span className="v mono txt-neg">{pos.stop_loss?.toFixed(3) ?? "—"}</span>
             <span className="k">Aberta em</span><span className="v mono">{new Date(pos.opened_at).toLocaleString("pt-BR")}</span>
@@ -44,21 +145,29 @@ function PositionDetailSheet({ pos, onClose }) {
               </>
             )}
           </div>
+
           <hr />
-          <div className="card-sub" style={{ marginBottom: 8 }}>Ciclo de vida</div>
-          <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
-            {isOpen ? (
-              <>A posição está atualmente <span className="txt-pos">aberta</span>. O gerenciador monitora o preço a cada ciclo e sai por TP, SL ou sinal da estratégia.</>
-            ) : (
-              <>Posição encerrada via {pos.status === "LIQUIDATED" ? <span className="txt-neg">liquidação</span> : "saída do gerenciador"}.</>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <span className="card-sub">Logs relacionados</span>
+            {onJumpToLogs && (
+              <a className="lf-cid" onClick={() => onJumpToLogs(pos.correlation_id)}>
+                ver tudo →
+              </a>
             )}
           </div>
+          <RelatedLogs correlation_id={pos.correlation_id} />
+
           {isOpen && (
             <>
               <hr />
               <div style={{ display: "flex", gap: 8 }}>
                 <button className="btn btn-full" onClick={onClose}>Fechar painel</button>
-                <button className="btn btn-danger btn-full">Encerrar posição</button>
+                <button
+                  className="btn btn-danger btn-full"
+                  onClick={() => onCloseNow?.(pos.id)}
+                >
+                  ■ Encerrar posição agora
+                </button>
               </div>
             </>
           )}
