@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bot de Trading · Polymarket</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!--
+      Loaded as classic <script> tags so JSX can run via in-browser Babel.
+      For a real build, swap this for Vite + ES modules. The order matters:
+      React first, then Recharts, then primitives, then component layers.
+    -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/prop-types@15/prop-types.min.js"></script>
+    <script src="https://unpkg.com/recharts/umd/Recharts.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Mock API (no JSX, plain JS) -->
+    <script src="./mock-data.js"></script>
+
+    <!-- JSX layers -->
+    <script type="text/babel" data-presets="env,react" src="./primitives.jsx"></script>
+    <script type="text/babel" data-presets="env,react" src="./enhancements.jsx"></script>
+    <script type="text/babel" data-presets="env,react" src="./equity-chart.jsx"></script>
+    <script type="text/babel" data-presets="env,react" src="./topbar-kpi.jsx"></script>
+    <script type="text/babel" data-presets="env,react" src="./tables.jsx"></script>
+    <script type="text/babel" data-presets="env,react" src="./overlays.jsx"></script>
+    <script type="text/babel" data-presets="env,react" src="./pages.jsx"></script>
+    <script type="text/babel" data-presets="env,react" src="./analysis-page.jsx"></script>
+    <script type="text/babel" data-presets="env,react" src="./app.jsx"></script>
+  </body>
+</html>
