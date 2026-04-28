@@ -52,7 +52,8 @@ class RunnerProxy:
                 return False
             from app.runner import TradingRunner
             self._runner = TradingRunner()
-            self._runner.install_signal_handlers()
+            # Signal handlers only work in the main thread; skip when running
+            # inside a FastAPI worker thread.
             self.snapshot_cache = self._runner.snapshot_cache
             self._started_at = datetime.utcnow()
             self._last_error = None
